@@ -1,19 +1,22 @@
 <?php
 
-// app/Models/Delivery.php
+// app/Models/Delivery.php (MODIFIÉ - avec delivery groups)
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use App\Enums\DeliveryStatus;
+use App\Traits\HasStatus;
 
 class Delivery extends Model
 {
-    use HasFactory;
+    use HasFactory, HasStatus;
 
     protected $fillable = [
         'order_id',
         'transporter_id',
+        'delivery_group_id',
+        'sequence_in_group',
         'pickup_location_id',
         'pickup_address',
         'delivery_location_id',
@@ -54,6 +57,11 @@ class Delivery extends Model
     public function transporter()
     {
         return $this->belongsTo(Transporter::class);
+    }
+
+    public function deliveryGroup()
+    {
+        return $this->belongsTo(DeliveryGroup::class);
     }
 
     public function pickupLocation()
@@ -140,6 +148,19 @@ class Delivery extends Model
         return url('storage/' . $this->delivery_proof_photo);
     }
 
+    public function getCurrentLocationAttribute(): ?array
+    {
+        if (!$this->current_latitude || !$this->current_longitude) {
+            return null;
+        }
+
+        return [
+            'latitude' => (float) $this->current_latitude,
+            'longitude' => (float) $this->current_longitude,
+            'updated_at' => $this->last_location_update?->toIso8601String(),
+        ];
+    }
+
     // Scopes
     public function scopeForTransporter($query, $transporterId)
     {
@@ -153,5 +174,11 @@ class Delivery extends Model
             DeliveryStatus::PICKED_UP,
             DeliveryStatus::IN_TRANSIT,
         ]);
+    }
+
+    public function scopeDelayed($query)
+    {
+        return $query->where('on_time', false)
+            ->whereNotNull('delay_minutes');
     }
 }

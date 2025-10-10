@@ -1,16 +1,17 @@
 <?php
 
-// app/Models/Payment.php
+// app/Models/Payment.php (MODIFIÉ - avec splits)
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use App\Enums\PaymentStatus;
 use App\Enums\PaymentMethod;
+use App\Traits\HasStatus;
 
 class Payment extends Model
 {
-    use HasFactory;
+    use HasFactory, HasStatus;
 
     protected $fillable = [
         'order_id',
@@ -57,6 +58,11 @@ class Payment extends Model
         return $this->belongsTo(User::class, 'payee_id');
     }
 
+    public function splits()
+    {
+        return $this->hasMany(PaymentSplit::class);
+    }
+
     // Boot
     protected static function boot()
     {
@@ -81,10 +87,39 @@ class Payment extends Model
             'status' => PaymentStatus::HELD,
             'held_at' => now(),
         ]);
+
+        // Créer les splits pour chaque producteur
+        $this->createSplits();
     }
 
-    public function release(): void
+    public function createSplits(): void
     {
+        $order = $this->order;
+
+        // Grouper items par producteur
+        $itemsByProducer = $order->items->groupBy('producer_id');
+
+        foreach ($itemsByProducer as $producerId => $items) {
+            $totalAmount = $items->sum('subtotal');
+            $totalCommission = $items->sum('platform_commission');
+            $netAmount = $totalAmount - $totalCommission;
+
+            $this->splits()->create([
+                'producer_id' => $producerId,
+                'amount' => $totalAmount,
+                'platform_commission' => $totalCommission,
+                'net_amount' => $netAmount,
+                'status' => PaymentStatus::HELD,
+            ]);
+        }
+    }
+
+    public function releaseToProducers(): void
+    {
+        foreach ($this->splits as $split) {
+            $split->release();
+        }
+
         $this->update([
             'status' => PaymentStatus::RELEASED,
             'released_at' => now(),
@@ -106,6 +141,21 @@ class Payment extends Model
         ]);
     }
 
+    public function getTimeSinceHeldAttribute(): ?int
+    {
+        if (!$this->held_at) {
+            return null;
+        }
+
+        return $this->held_at->diffInHours(now());
+    }
+
+    public function canBeReleased(): bool
+    {
+        return $this->status === PaymentStatus::HELD 
+            && $this->order->status === \App\Enums\OrderStatus::COMPLETED;
+    }
+
     // Scopes
     public function scopePending($query)
     {
@@ -115,5 +165,15 @@ class Payment extends Model
     public function scopeHeld($query)
     {
         return $query->where('status', PaymentStatus::HELD);
+    }
+
+    public function scopeByMethod($query, PaymentMethod $method)
+    {
+        return $query->where('method', $method);
+    }
+
+    public function scopeForOrder($query, $orderId)
+    {
+        return $query->where('order_id', $orderId);
     }
 }

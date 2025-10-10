@@ -1,24 +1,23 @@
 <?php
 
-// app/Models/Order.php
+// app/Models/Order.php (MODIFIÉ COMPLET - NOUVELLE VERSION)
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use App\Enums\OrderStatus;
+use App\Traits\HasStatus;
+use App\Traits\Auditable;
+use App\Traits\HasTimeframes;
 
 class Order extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory, SoftDeletes, HasStatus, Auditable, HasTimeframes;
 
     protected $fillable = [
         'order_number',
         'buyer_id',
-        'producer_id',
-        'offer_id',
-        'quantity',
-        'unit_price',
         'subtotal',
         'platform_commission',
         'delivery_cost',
@@ -27,6 +26,10 @@ class Order extends Model
         'delivery_location_id',
         'requested_delivery_date',
         'delivery_notes',
+        'total_items',
+        'items_confirmed',
+        'items_cancelled',
+        'is_multi_producer',
         'status',
         'cancellation_reason',
         'confirmed_at',
@@ -36,13 +39,12 @@ class Order extends Model
     ];
 
     protected $casts = [
-        'quantity' => 'decimal:2',
-        'unit_price' => 'decimal:2',
         'subtotal' => 'decimal:2',
         'platform_commission' => 'decimal:2',
         'delivery_cost' => 'decimal:2',
         'total_amount' => 'decimal:2',
         'requested_delivery_date' => 'datetime',
+        'is_multi_producer' => 'boolean',
         'status' => OrderStatus::class,
         'confirmed_at' => 'datetime',
         'paid_at' => 'datetime',
@@ -56,14 +58,16 @@ class Order extends Model
         return $this->belongsTo(Buyer::class);
     }
 
-    public function producer()
+    public function items()
     {
-        return $this->belongsTo(Producer::class);
+        return $this->hasMany(OrderItem::class);
     }
 
-    public function offer()
+    public function producers()
     {
-        return $this->belongsTo(Offer::class);
+        return $this->belongsToMany(Producer::class, 'order_items')
+            ->withPivot(['quantity', 'unit_price', 'subtotal', 'status'])
+            ->distinct();
     }
 
     public function deliveryLocation()
@@ -91,7 +95,7 @@ class Order extends Model
         return $this->hasMany(Dispute::class);
     }
 
-    // Boot method
+    // Boot
     protected static function boot()
     {
         parent::boot();
@@ -116,19 +120,30 @@ class Order extends Model
 
     public function calculateTotals(): void
     {
-        $this->subtotal = $this->quantity * $this->unit_price;
-        
-        // Commission plateforme (défaut 7%)
-        $commissionRate = config('agri-connect.platform_commission', 7) / 100;
-        $this->platform_commission = $this->subtotal * $commissionRate;
-        
-        // Total
+        $this->subtotal = $this->items->sum('subtotal');
+        $this->platform_commission = $this->items->sum('platform_commission');
         $this->total_amount = $this->subtotal + $this->delivery_cost;
+        $this->total_items = $this->items->count();
+        $this->is_multi_producer = $this->items->pluck('producer_id')->unique()->count() > 1;
+        
+        $this->save();
     }
 
-    public function getProducerEarningsAttribute(): float
+    public function recalculateItemsStatus(): void
     {
-        return $this->subtotal - $this->platform_commission;
+        $this->items_confirmed = $this->items()->confirmed()->count();
+        $this->items_cancelled = $this->items()->where('status', 'cancelled')->count();
+        
+        $totalItems = $this->total_items;
+        
+        // Mettre à jour statut global selon items
+        if ($this->items_cancelled === $totalItems && $totalItems > 0) {
+            $this->status = OrderStatus::CANCELLED;
+        } elseif ($this->items_confirmed === $totalItems && $totalItems > 0) {
+            $this->status = OrderStatus::CONFIRMED;
+        }
+        
+        $this->save();
     }
 
     public function confirm(): void
@@ -162,9 +177,14 @@ class Order extends Model
             'completed_at' => now(),
         ]);
 
-        // Mettre à jour statistiques
+        // Mettre à jour statistiques acheteur
         $this->buyer->incrementSpent($this->total_amount);
-        $this->producer->incrementRevenue($this->producer_earnings);
+
+        // Libérer paiements aux producteurs
+        if ($this->payment && $this->payment->status === \App\Enums\PaymentStatus::HELD) {
+            // Sera géré par le PaymentService
+            event(new \App\Events\Orders\OrderCompleted($this));
+        }
     }
 
     public function cancel(string $reason): void
@@ -174,20 +194,12 @@ class Order extends Model
             'cancellation_reason' => $reason,
         ]);
 
-        // Libérer quantité réservée
-        $this->offer->releaseQuantity($this->quantity);
-    }
-
-    public function isWithinGuaranteedTime(): bool
-    {
-        if (!$this->confirmed_at || !$this->delivered_at) {
-            return false;
-        }
-
-        $guaranteedHours = config('agri-connect.delivery_guarantee_hours', 48);
-        $deliveryTime = $this->confirmed_at->diffInHours($this->delivered_at);
-        
-        return $deliveryTime <= $guaranteedHours;
+        // Libérer quantités réservées
+        $this->items->each(function($item) {
+            if ($item->status->canBeCancelled()) {
+                $item->cancel('Commande annulée');
+            }
+        });
     }
 
     public function canBeCancelled(): bool
@@ -205,6 +217,31 @@ class Order extends Model
             && !$this->ratings()->where('rater_id', auth()->id())->exists();
     }
 
+    public function isWithinGuaranteedTime(): bool
+    {
+        if (!$this->confirmed_at || !$this->delivered_at) {
+            return false;
+        }
+
+        $guaranteedHours = config('agri-connect.delivery_guarantee_hours', 48);
+        $deliveryTime = $this->confirmed_at->diffInHours($this->delivered_at);
+        
+        return $deliveryTime <= $guaranteedHours;
+    }
+
+    public function getItemsProgressAttribute(): array
+    {
+        return [
+            'total' => $this->total_items,
+            'confirmed' => $this->items_confirmed,
+            'cancelled' => $this->items_cancelled,
+            'pending' => $this->total_items - $this->items_confirmed - $this->items_cancelled,
+            'percentage_confirmed' => $this->total_items > 0 
+                ? round(($this->items_confirmed / $this->total_items) * 100, 1)
+                : 0,
+        ];
+    }
+
     // Scopes
     public function scopeForBuyer($query, $buyerId)
     {
@@ -213,7 +250,9 @@ class Order extends Model
 
     public function scopeForProducer($query, $producerId)
     {
-        return $query->where('producer_id', $producerId);
+        return $query->whereHas('items', function($q) use ($producerId) {
+            $q->where('producer_id', $producerId);
+        });
     }
 
     public function scopeByStatus($query, $status)
@@ -234,6 +273,16 @@ class Order extends Model
             OrderStatus::READY_FOR_PICKUP,
             OrderStatus::IN_TRANSIT,
         ]);
+    }
+
+    public function scopeCompleted($query)
+    {
+        return $query->where('status', OrderStatus::COMPLETED);
+    }
+
+    public function scopeMultiProducer($query)
+    {
+        return $query->where('is_multi_producer', true);
     }
 }
 

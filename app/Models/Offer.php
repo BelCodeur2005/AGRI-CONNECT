@@ -1,16 +1,22 @@
 <?php
 
-// app/Models/Offer.php
+// app/Models/Offer.php (MODIFIÉ - avec stock movements)
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use App\Enums\OfferStatus;
+use App\Enums\StockMovementType;
+use App\Traits\HasStatus;
+use App\Traits\Searchable;
+use App\Traits\HasTimeframes;
 
 class Offer extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory, SoftDeletes, HasStatus, Searchable, HasTimeframes;
+
+    protected $searchable = ['title', 'description'];
 
     protected $fillable = [
         'producer_id',
@@ -61,14 +67,19 @@ class Offer extends Model
         return $this->belongsTo(Location::class);
     }
 
-    public function orders()
+    public function orderItems()
     {
-        return $this->hasMany(Order::class);
+        return $this->hasMany(OrderItem::class);
     }
 
     public function favorites()
     {
         return $this->morphMany(Favorite::class, 'favoriteable');
+    }
+
+    public function stockMovements()
+    {
+        return $this->hasMany(OfferStockMovement::class);
     }
 
     // Helper methods
@@ -97,26 +108,80 @@ class Offer extends Model
             && $this->available_until >= now();
     }
 
-    public function reserveQuantity(float $quantity): void
+    public function reserveQuantity(float $quantity, ?OrderItem $orderItem = null): void
     {
+        $quantityBefore = $this->remaining_quantity;
+        
         $this->increment('quantity_reserved', $quantity);
+        
+        // Créer mouvement stock
+        $this->stockMovements()->create([
+            'order_item_id' => $orderItem?->id,
+            'type' => StockMovementType::RESERVATION,
+            'quantity' => $quantity,
+            'quantity_before' => $quantityBefore,
+            'quantity_after' => $this->fresh()->remaining_quantity,
+            'reason' => 'Réservation commande',
+            'created_by' => auth()->id(),
+        ]);
+        
         $this->updateStatus();
     }
 
-    public function releaseQuantity(float $quantity): void
+    public function releaseQuantity(float $quantity, ?OrderItem $orderItem = null): void
     {
+        $quantityBefore = $this->remaining_quantity;
+        
         $this->decrement('quantity_reserved', $quantity);
+        
+        // Créer mouvement stock
+        $this->stockMovements()->create([
+            'order_item_id' => $orderItem?->id,
+            'type' => StockMovementType::RELEASE,
+            'quantity' => $quantity,
+            'quantity_before' => $quantityBefore,
+            'quantity_after' => $this->fresh()->remaining_quantity,
+            'reason' => 'Annulation commande',
+            'created_by' => auth()->id(),
+        ]);
+        
+        $this->updateStatus();
+    }
+
+    public function confirmSale(float $quantity, ?OrderItem $orderItem = null): void
+    {
+        $quantityBefore = $this->quantity_available;
+        
+        // Réduire stock total
+        $this->decrement('quantity_available', $quantity);
+        $this->decrement('quantity_reserved', $quantity);
+        
+        // Créer mouvement stock
+        $this->stockMovements()->create([
+            'order_item_id' => $orderItem?->id,
+            'type' => StockMovementType::SALE,
+            'quantity' => $quantity,
+            'quantity_before' => $quantityBefore,
+            'quantity_after' => $this->fresh()->quantity_available,
+            'reason' => 'Vente confirmée',
+            'created_by' => auth()->id(),
+        ]);
+        
         $this->updateStatus();
     }
 
     public function updateStatus(): void
     {
+        $this->refresh();
+        
         if ($this->remaining_quantity <= 0) {
             $this->update(['status' => OfferStatus::SOLD_OUT]);
         } elseif ($this->remaining_quantity < $this->quantity_available) {
             $this->update(['status' => OfferStatus::RESERVED]);
         } elseif ($this->available_until < now()) {
             $this->update(['status' => OfferStatus::EXPIRED]);
+        } elseif ($this->status !== OfferStatus::ACTIVE && $this->remaining_quantity > 0) {
+            $this->update(['status' => OfferStatus::ACTIVE]);
         }
     }
 
@@ -143,14 +208,24 @@ class Offer extends Model
         return $query->where('product_id', $productId);
     }
 
-    public function scopeSearch($query, $search)
+    public function scopeByProducer($query, $producerId)
     {
-        return $query->where(function($q) use ($search) {
-            $q->where('title', 'like', "%{$search}%")
-              ->orWhere('description', 'like', "%{$search}%")
-              ->orWhereHas('product', function($query) use ($search) {
-                  $query->where('name', 'like', "%{$search}%");
-              });
-        });
+        return $query->where('producer_id', $producerId);
+    }
+
+    public function scopeOrganic($query)
+    {
+        return $query->where('organic', true);
+    }
+
+    public function scopeExpiringWithin($query, int $days)
+    {
+        return $query->where('available_until', '<=', now()->addDays($days))
+            ->where('available_until', '>=', now());
+    }
+
+    public function scopeLowStock($query, float $threshold = 10)
+    {
+        return $query->whereRaw('(quantity_available - quantity_reserved) < ?', [$threshold]);
     }
 }

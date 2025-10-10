@@ -3,6 +3,8 @@
 // app/Models/Dispute.php
 namespace App\Models;
 
+use App\Enums\DisputeStatus;
+use App\Enums\DisputeType;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
@@ -25,6 +27,8 @@ class Dispute extends Model
     ];
 
     protected $casts = [
+        'type' => DisputeType::class,
+        'status' => DisputeStatus::class,
         'evidence_photos' => 'array',
         'resolved_at' => 'datetime',
     ];
@@ -54,7 +58,7 @@ class Dispute extends Model
     public function resolve(User $admin, string $resolution): void
     {
         $this->update([
-            'status' => 'resolved',
+            'status' => DisputeStatus::RESOLVED,
             'resolution' => $resolution,
             'resolved_by' => $admin->id,
             'resolved_at' => now(),
@@ -75,7 +79,7 @@ class Dispute extends Model
     // Scopes
     public function scopeOpen($query)
     {
-        return $query->where('status', 'open');
+        return $query->where('status', DisputeStatus::OPEN);
     }
 
     public function scopeForOrder($query, $orderId)

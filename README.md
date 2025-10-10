@@ -9,6 +9,36 @@ La solution numérique qui transforme l'agriculture camerounaise. Du champ à la
 - Logistique & livraisons ([app/Models/Delivery.php](cci:7://file:///d:/Bel/projets/projet_laravel/projet_agri_connect/agri-connect-api/app/Models/Delivery.php:0:0-0:0))
 - Litiges & soutien ([app/Models/Dispute.php](cci:7://file:///d:/Bel/projets/projet_laravel/projet_agri_connect/agri-connect-api/app/Models/Dispute.php:0:0-0:0))
 
+## Architecture applicative
+- **Entrées API** : routes `routes/api.php` (à créer/mettre à jour) pointent vers `app/Http/Controllers/Api/*`.
+- **Validation** : `app/Http/Requests/` centralise la validation des payloads.
+- **Logique métier** : concentrée dans `app/Models/` et `app/Enums/`, avec traits utilitaires dans `app/Traits/`.
+- **Persistance** : migrations dans `database/migrations/`, seeders & factories dans `database/seeders/` et `database/factories/`.
+- **Sécurité** : Authentification via Sanctum, rôles/permissions via Spatie (`composer.json`).
+
+### Diagramme des modules & flux API
+```mermaid
+flowchart LR
+    Client[Client mobile / web] -->|HTTP JSON| API[Routes API]
+    API --> Controllers[Controllers API]
+    Controllers --> Requests[FormRequests \n Validation]
+    Controllers --> Services[Services / Traits]
+    Services --> Models[Models Eloquent]
+    Models --> Enums[Enums métier]
+    Models --> DB[(Base de données)]
+    Controllers --> Notifications[Notifications \n & Events]
+    Controllers --> Resources[Réponses JSON]
+
+    subgraph Layering
+        API
+        Controllers
+        Requests
+        Services
+        Models
+        Enums
+    end
+```
+
 ## Architecture
 - Laravel 11, PHP 8.2 ([composer.json](cci:7://file:///d:/Bel/projets/projet_laravel/projet_agri_connect/agri-connect-api/composer.json:0:0-0:0))
 - Sanctum, Spatie Permission, Intervention Image
