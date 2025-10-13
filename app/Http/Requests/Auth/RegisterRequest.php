@@ -48,7 +48,7 @@ class RegisterRequest extends FormRequest
                 'driver_license_number' => 'required|string|max:255',
                 'max_capacity_kg' => 'required|numeric|min:50',
             ];
-        }
+        }   
 
         return $rules;
     }
