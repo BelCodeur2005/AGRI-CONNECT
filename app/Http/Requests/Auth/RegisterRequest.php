@@ -4,6 +4,8 @@
 namespace App\Http\Requests\Auth;
 
 use Illuminate\Foundation\Http\FormRequest;
+use App\Enums\UserRole;
+use Illuminate\Validation\Rules\Enum;
 use Illuminate\Validation\Rules\Password;
 
 class RegisterRequest extends FormRequest
@@ -15,50 +17,48 @@ class RegisterRequest extends FormRequest
 
     public function rules(): array
     {
-        $rules = [
-            'name' => 'required|string|max:255',
-            'email' => 'nullable|email|unique:users,email',
-            'phone' => 'required|string|unique:users,phone|regex:/^6[0-9]{8}$/', // Format CM
-            'password' => ['required', 'confirmed', Password::min(8)],
-            'role' => 'required|in:producer,buyer,transporter',
+        return [
+            'name' => ['required', 'string', 'min:3', 'max:255'],
+            'phone' => [
+                'required',
+                'string',
+                'regex:/^(237)?6[5-9]\d{7}$/',
+                'unique:users,phone'
+            ],
+            'email' => ['nullable', 'string', 'email', 'max:255', 'unique:users,email'],
+            'password' => ['required', 'confirmed', Password::min(8)
+                ->mixedCase()
+                ->numbers()
+                ->symbols()
+            ],
+            'role' => ['required', new Enum(UserRole::class)],
+            
+            // Producer fields
+            'farm_name' => ['required_if:role,producer', 'string', 'max:255'],
+            'location_id' => ['required_if:role,producer,buyer', 'exists:locations,id'],
+            'farm_address' => ['required_if:role,producer', 'string', 'max:500'],
+            
+            // Buyer fields
+            'business_name' => ['required_if:role,buyer', 'string', 'max:255'],
+            'business_type' => ['required_if:role,buyer', 'string', 'in:restaurant,hotel,canteen,processor,retailer'],
+            'delivery_address' => ['required_if:role,buyer', 'string', 'max:500'],
+            
+            // Transporter fields
+            'vehicle_type' => ['required_if:role,transporter', 'string', 'in:pickup,truck,van,motorcycle'],
+            'vehicle_registration' => ['required_if:role,transporter', 'string', 'max:50'],
+            'max_capacity_kg' => ['required_if:role,transporter', 'numeric', 'min:50', 'max:5000'],
+            'driver_license_number' => ['required_if:role,transporter', 'string', 'max:255'],
+
         ];
-
-        // Validation spécifique selon le rôle
-        if ($this->role === 'producer') {
-            $rules += [
-                'location_id' => 'required|exists:locations,id',
-                'farm_name' => 'nullable|string|max:255',
-                'farm_address' => 'required|string',
-            ];
-        }
-
-        if ($this->role === 'buyer') {
-            $rules += [
-                'location_id' => 'required|exists:locations,id',
-                'business_name' => 'required|string|max:255',
-                'business_type' => 'required|in:restaurant,hotel,supermarket,processor,exporter,other',
-                'delivery_address' => 'required|string',
-            ];
-        }
-
-        if ($this->role === 'transporter') {
-            $rules += [
-                'vehicle_type' => 'required|string|max:255',
-                'vehicle_registration' => 'required|string|max:255',
-                'driver_license_number' => 'required|string|max:255',
-                'max_capacity_kg' => 'required|numeric|min:50',
-            ];
-        }   
-
-        return $rules;
     }
 
     public function messages(): array
     {
         return [
-            'phone.regex' => 'Le numéro de téléphone doit commencer par 6 et contenir 9 chiffres',
-            'phone.unique' => 'Ce numéro de téléphone est déjà utilisé',
-            'email.unique' => 'Cet email est déjà utilisé',
+            'phone.regex' => 'Le numéro de téléphone doit être un numéro camerounais valide (ex: 651712856 ou 237651712856)',
+            'farm_name.required_if' => 'Le nom de la ferme est requis pour les producteurs',
+            'business_name.required_if' => 'Le nom de l\'entreprise est requis pour les acheteurs',
+            'vehicle_type.required_if' => 'Le type de véhicule est requis pour les transporteurs',
         ];
     }
 }
