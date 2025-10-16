@@ -126,7 +126,7 @@ class OrderService
         $order->items->each->complete();
 
         // Événement pour libérer paiement
-        // event(new \App\Events\Orders\OrderCompleted($order));
+        event(new \App\Events\Orders\OrderCompleted($order));
     }
 
     /**
@@ -147,7 +147,7 @@ class OrderService
         ]);
 
         // Événement
-        // event(new \App\Events\Orders\OrderCancelled($order));
+        event(new \App\Events\Orders\OrderCancelled($order));
     }
 
     /**

@@ -24,7 +24,7 @@ class OrderItemService
         $item->confirm();
 
         // Événement
-        // event(new \App\Events\Orders\OrderItemConfirmed($item));
+        event(new \App\Events\Orders\OrderItemConfirmed($item));
     }
 
     /**

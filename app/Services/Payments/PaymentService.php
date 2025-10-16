@@ -90,7 +90,7 @@ class PaymentService
         $payment->order->markAsPaid();
 
         // Événement
-        // event(new \App\Events\Payments\PaymentReceived($payment));
+        event(new \App\Events\Payments\PaymentReceived($payment));
     }
 
     /**
@@ -105,7 +105,7 @@ class PaymentService
         $this->escrowService->release($payment);
 
         // Événement
-        // event(new \App\Events\Payments\PaymentReleased($payment));
+        event(new \App\Events\Payments\PaymentReleased($payment));
     }
 
     /**
